@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Send to Tech Support - Standalone Test</title>
+    <link rel="stylesheet" href="style.css" />
+    <style>
+        body {
+            background: #1a1a1a;
+            color: white;
+            font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+            margin: 20px;
+        }
+        .test-header {
+            background: #333;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+        .test-note {
+            background: #444;
+            padding: 15px;
+            border-radius: 5px;
+            margin-bottom: 20px;
+            border-left: 4px solid #0094ff;
+        }
+    </style>
+</head>
+<body>
+    <div class="test-header">
+        <h1>Send to Tech Support - Standalone Test</h1>
+        <p>This tests the extension functionality outside of Premiere Pro. The system detection and UI should work, but Premiere-specific data will show as "Unknown".</p>
+    </div>
+    
+    <div class="test-note">
+        <strong>Testing Note:</strong> This page simulates running the extension outside of UXP/Premiere Pro. System information should be detected, but project/sequence info will be unavailable.
+    </div>
+
+    <div class="premiere-panel">
+        <h2 class="premiere-header">Send to Tech Support</h2>
+        <div class="button-row">
+            <button id="copy-btn" class="premiere-copy-btn">Copy Info to Clipboard</button>
+        </div>
+        <!-- Quick diagnostic summary -->
+        <div id="output-area" class="output-area"></div>
+        <!-- Detailed diagnostic sections will be rendered here by JS -->
+        <div id="pp-detailed-info"></div>
+    </div>
+
+    <script>
+        // Mock UXP require function for testing
+        const mockRequire = (moduleName) => {
+            if (moduleName === 'os') {
+                return {
+                    platform: () => navigator.platform.includes('Mac') ? 'darwin' : 'win32',
+                    arch: () => navigator.userAgent.includes('Intel') ? 'x64' : 'arm64',
+                    version: () => 'Test OS Version',
+                    release: () => 'Test Release',
+                    cpus: () => [{
+                        model: 'Test CPU Model',
+                        speed: 2400
+                    }, {
+                        model: 'Test CPU Model',
+                        speed: 2400
+                    }],
+                    totalmem: () => 16 * 1024 * 1024 * 1024, // 16GB
+                    freemem: () => 8 * 1024 * 1024 * 1024   // 8GB
+                };
+            }
+            if (moduleName === 'premierepro') {
+                return {
+                    Project: {
+                        getActiveProject: () => null // Simulate no Premiere Pro
+                    }
+                };
+            }
+            if (moduleName === 'uxp') {
+                return {
+                    app: {
+                        name: 'Adobe Premiere Pro (Test)',
+                        version: '25.2.0'
+                    }
+                };
+            }
+            return {};
+        };
+
+        // Replace require globally for testing
+        if (typeof require === 'undefined') {
+            window.require = mockRequire;
+        }
+    </script>
+    <script src="main.js"></script>
+</body>
+</html>

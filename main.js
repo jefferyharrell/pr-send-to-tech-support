@@ -81,6 +81,104 @@ async function getPremiereData() {
 }
 
 
+// Get system information using available UXP APIs
+function getSystemData() {
+  let osVersion = 'Unknown';
+  let cpu = 'Unknown';
+  let gpu = 'Unknown';
+  let ram = 'Unknown';
+  let storage = 'Unknown';
+  
+  try {
+    const os = require('os');
+    let osPlatform = os.platform();
+    if (osPlatform === 'darwin') osPlatform = 'macOS';
+    else if (osPlatform === 'win32') osPlatform = 'Windows';
+    
+    // Get OS version
+    if (os.version) {
+      osVersion = `${osPlatform} ${os.version()}`;
+    } else if (os.release) {
+      osVersion = `${osPlatform} ${os.release()}`;
+    } else {
+      osVersion = osPlatform;
+    }
+    
+    // CPU information
+    const arch = os.arch();
+    const cpus = os.cpus();
+    if (cpus && cpus.length > 0) {
+      cpu = `${cpus[0].model} (${cpus.length} cores, ${arch})`;
+    } else {
+      cpu = `${arch} architecture`;
+    }
+    
+    // Memory information
+    const totalMem = os.totalmem();
+    const freeMem = os.freemem();
+    if (totalMem && totalMem > 0) {
+      const totalGB = Math.round(totalMem / (1024 * 1024 * 1024));
+      const freeGB = Math.round(freeMem / (1024 * 1024 * 1024));
+      ram = `${totalGB} GB total, ${freeGB} GB free`;
+    } else {
+      ram = 'Unknown';
+    }
+    
+    // GPU detection - UXP doesn't provide GPU APIs for Premiere, so detect based on platform
+    if (osPlatform === 'macOS') {
+      // Try to detect Apple Silicon vs Intel
+      if (arch === 'arm64') {
+        gpu = 'Apple Silicon GPU';
+      } else {
+        gpu = 'macOS GPU (Intel-based)';
+      }
+    } else if (osPlatform === 'Windows') {
+      gpu = 'Windows GPU (detected via platform)';
+    } else {
+      gpu = 'GPU information not available';
+    }
+    
+    // Storage information - UXP doesn't provide direct storage APIs
+    storage = 'Storage information not available in UXP';
+    
+  } catch (e) {
+    // Fallback to userAgent parsing
+    if (navigator.userAgent.indexOf('Macintosh') !== -1) {
+      osVersion = 'macOS (detected via userAgent)';
+      if (navigator.userAgent.indexOf('Intel') !== -1) {
+        cpu = 'Intel processor (detected via userAgent)';
+        gpu = 'macOS GPU (Intel-based)';
+      } else {
+        cpu = 'Apple Silicon processor (detected via userAgent)';
+        gpu = 'Apple Silicon GPU';
+      }
+    } else if (navigator.userAgent.indexOf('Windows') !== -1) {
+      osVersion = 'Windows (detected via userAgent)';
+      cpu = 'Windows processor (detected via userAgent)';
+      gpu = 'Windows GPU (detected via userAgent)';
+    }
+    
+    // Try to parse more specific OS version from userAgent
+    const match = navigator.userAgent.match(/(Mac OS X|Windows NT) ([\d_\.]+)/);
+    if (match && match[2]) {
+      const version = match[2].replace(/_/g, '.');
+      if (match[1] === 'Mac OS X') {
+        osVersion = `macOS ${version}`;
+      } else {
+        osVersion = `Windows ${version}`;
+      }
+    }
+  }
+  
+  return {
+    osVersion,
+    cpu,
+    gpu,
+    ram,
+    storage
+  };
+}
+
 async function getDiagnosticInfo() {
   const premiere = await getPremiereData();
   const system = getSystemData();
@@ -132,20 +230,55 @@ function getAllPanelInfoText() {
 }
 
 async function copyToClipboard() {
-  // Combine both diagnostic info and detailed info
-  const text = getAllPanelInfoText();
-  if (navigator.clipboard && navigator.clipboard.writeText) {
-    navigator.clipboard.writeText(text);
-  } else {
-    // Fallback
-    const textarea = document.createElement('textarea');
-    textarea.value = text;
-    document.body.appendChild(textarea);
-    textarea.select();
-    document.execCommand('copy');
-    document.body.removeChild(textarea);
+  const button = document.getElementById('copy-btn');
+  const originalText = button.textContent;
+  
+  try {
+    // Combine both diagnostic info and detailed info
+    const text = getAllPanelInfoText();
+    
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(text);
+    } else {
+      // Fallback
+      const textarea = document.createElement('textarea');
+      textarea.value = text;
+      document.body.appendChild(textarea);
+      textarea.select();
+      document.execCommand('copy');
+      document.body.removeChild(textarea);
+    }
+    
+    // Show success feedback
+    button.textContent = 'Copied! ✓';
+    button.style.backgroundColor = '#28a745';
+    
+    // Reset button after 2 seconds
+    setTimeout(() => {
+      button.textContent = originalText;
+      button.style.backgroundColor = '#0094ff';
+    }, 2000);
+    
+  } catch (error) {
+    // Show error feedback
+    button.textContent = 'Copy Failed';
+    button.style.backgroundColor = '#dc3545';
+    
+    // Reset button after 2 seconds
+    setTimeout(() => {
+      button.textContent = originalText;
+      button.style.backgroundColor = '#0094ff';
+    }, 2000);
+    
+    console.error('Failed to copy to clipboard:', error);
   }
 }
+
+document.addEventListener('DOMContentLoaded', async () => {
+  // Initialize and display diagnostic info on load
+  await updateOutput();
+  await gatherAndDisplayDetailedInfo();
+});
 
 document.getElementById('copy-btn').addEventListener('click', async () => {
   await copyToClipboard();
@@ -153,8 +286,7 @@ document.getElementById('copy-btn').addEventListener('click', async () => {
 });
 
 
-// Show info on load
-updateOutput();
+// Note: Initialization now handled in DOMContentLoaded event above
 
 // Helper to get formats from all media in the project
 async function getFormatsFromProject(project) {
@@ -219,7 +351,7 @@ async function gatherAndDisplayDetailedInfo() {
   // 2. System info
   let osPlatform = 'Unknown';
   let osArch = 'Unknown';
-  let gpuInfo = 'Apple M4 GPU';
+  let gpuInfo = 'Unknown';
   let osVersion = 'Unknown';
   try {
     const os = require('os');
@@ -232,18 +364,38 @@ async function gatherAndDisplayDetailedInfo() {
     } else if (os.release) {
       osVersion = os.release();
     }
+    
+    // Dynamic GPU detection based on platform and architecture
+    if (osPlatform === 'Mac') {
+      if (osArch === 'arm64') {
+        gpuInfo = 'Apple Silicon GPU';
+      } else {
+        gpuInfo = 'macOS GPU (Intel-based)';
+      }
+    } else if (osPlatform === 'Windows') {
+      gpuInfo = 'Windows GPU (detected via platform)';
+    } else {
+      gpuInfo = 'GPU information not available';
+    }
   } catch (e) {
     // Fallback to userAgent
-    if (navigator.userAgent.indexOf('Macintosh') !== -1) osPlatform = 'Mac';
-    else if (navigator.userAgent.indexOf('Windows') !== -1) osPlatform = 'Windows';
+    if (navigator.userAgent.indexOf('Macintosh') !== -1) {
+      osPlatform = 'Mac';
+      if (navigator.userAgent.indexOf('Intel') !== -1) {
+        gpuInfo = 'macOS GPU (Intel-based)';
+      } else {
+        gpuInfo = 'Apple Silicon GPU';
+      }
+    } else if (navigator.userAgent.indexOf('Windows') !== -1) {
+      osPlatform = 'Windows';
+      gpuInfo = 'Windows GPU (detected via userAgent)';
+    }
     // Try to parse version from userAgent
     const match = navigator.userAgent.match(/(Mac OS X|Windows NT) ([\d_\.]+)/);
     if (match && match[2]) {
       osVersion = match[2].replace(/_/g, '.');
     }
   }
-  // GPU detection is not available in UXP
-  gpuInfo = 'Apple M4 GPU';
 
   // 3. Project and sequence info
   let projectName = 'Unknown';
@@ -282,12 +434,8 @@ async function gatherAndDisplayDetailedInfo() {
         }
       }
       // === Unique codecs from all timeline clips ===
-      console.log('About to call getUniqueCodecsFromTimeline with sequence:', sequence);
       uniqueCodecs = [];
       if (sequence) {
-        // uniqueCodecs = await getUniqueCodecsFromTimeline(sequence);
-        
-        /*  BEN ADDED THIS! */
     
         let usedMediaList = new Set(); // Set of used media extensions
         let usedCodecsList = new Set(); // Set of used codecs
@@ -443,10 +591,7 @@ async function gatherAndDisplayDetailedInfo() {
   infoDiv.innerHTML = html;
 }
 
-// Auto-run on panel load
-window.addEventListener('DOMContentLoaded', () => {
-  gatherAndDisplayDetailedInfo();
-});
+// Note: DOMContentLoaded initialization moved to earlier in file
 
 // === Unique codecs from all timeline clips ===
 async function getUniqueCodecsFromTimeline(sequence) {
