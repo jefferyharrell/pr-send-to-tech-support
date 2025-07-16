@@ -113,15 +113,25 @@ function getSystemData() {
       cpu = `${arch} architecture`;
     }
     
-    // Memory information
-    const totalMem = os.totalmem();
-    const freeMem = os.freemem();
-    if (totalMem && totalMem > 0) {
-      const totalGB = Math.round(totalMem / (1024 * 1024 * 1024));
-      const freeGB = Math.round(freeMem / (1024 * 1024 * 1024));
-      ram = `${totalGB} GB total, ${freeGB} GB free`;
-    } else {
-      ram = 'Unknown';
+    // Memory information - UXP has limited system access
+    try {
+      // UXP for Premiere Pro doesn't provide os.totalmem/freemem APIs
+      // These are Node.js APIs that aren't available in the UXP runtime
+      if (os.totalmem && typeof os.totalmem === 'function') {
+        const totalMem = os.totalmem();
+        const freeMem = os.freemem();
+        if (totalMem && totalMem > 0) {
+          const totalGB = Math.round(totalMem / (1024 * 1024 * 1024));
+          const freeGB = Math.round(freeMem / (1024 * 1024 * 1024));
+          ram = `${totalGB} GB total, ${freeGB} GB free`;
+        } else {
+          ram = 'Memory values returned as 0';
+        }
+      } else {
+        ram = 'Memory APIs not available in UXP';
+      }
+    } catch (memError) {
+      ram = 'Memory information not accessible';
     }
     
     // GPU detection - UXP doesn't provide GPU APIs for Premiere, so detect based on platform
@@ -182,6 +192,8 @@ function getSystemData() {
 async function getDiagnosticInfo() {
   const premiere = await getPremiereData();
   const system = getSystemData();
+  const workspace = await getWorkspaceInfo();
+  
   return (
     `Premiere Version: ${premiere.version}  \n` +
     `Project Name: ${premiere.projectName}  \n` +
@@ -195,8 +207,55 @@ async function getDiagnosticInfo() {
     `Sequence Settings: ${premiere.sequenceSettings}  \n` +
     `\n` +
     `Media Types: ${premiere.mediaTypes}  \n` +
-    `Formats: ${premiere.formats}  `
+    `Formats: ${premiere.formats}  \n` +
+    `\n` +
+    `Workspace: ${workspace.name}  \n` +
+    `Plugins: ${workspace.plugins}  `
   );
+}
+
+// Get workspace and plugin information
+async function getWorkspaceInfo() {
+  let workspaceName = 'Unknown';
+  let plugins = 'Unknown';
+  
+  try {
+    const ppro = require('premierepro');
+    
+    // Try to get current workspace - this API likely doesn't exist in UXP for Premiere
+    try {
+      if (ppro.Application && ppro.Application.getCurrentWorkspace) {
+        const app = await ppro.Application.getCurrentWorkspace();
+        if (app && app.name) {
+          workspaceName = app.name;
+        }
+      } else {
+        workspaceName = 'Workspace API not available in UXP';
+      }
+    } catch (e) {
+      workspaceName = 'Workspace info not available';
+    }
+    
+    // Try to get installed plugins/effects - this API likely doesn't exist in UXP  
+    try {
+      if (ppro.Application && ppro.Application.getInstalledPlugins) {
+        const pluginList = await ppro.Application.getInstalledPlugins();
+        if (pluginList && Array.isArray(pluginList)) {
+          plugins = pluginList.length > 0 ? pluginList.join(', ') : 'No plugins detected';
+        }
+      } else {
+        plugins = 'Plugin enumeration not available in UXP';
+      }
+    } catch (e) {
+      plugins = 'Plugin information not available';
+    }
+    
+  } catch (e) {
+    workspaceName = 'Premiere Pro API not available';
+    plugins = 'Plugin information not available';
+  }
+  
+  return { name: workspaceName, plugins };
 }
 
 async function updateOutput() {
@@ -205,26 +264,41 @@ async function updateOutput() {
   document.getElementById('output-area').textContent = info;
 }
 
+// Auto-refresh when sequences change
+let lastSequenceName = '';
+let refreshInterval;
+
+function startAutoRefresh() {
+  // Check for sequence changes every 2 seconds
+  refreshInterval = setInterval(async () => {
+    try {
+      const ppro = require('premierepro');
+      const project = await ppro.Project.getActiveProject();
+      if (project) {
+        const sequence = await project.getActiveSequence();
+        const currentSequenceName = sequence ? sequence.name : '';
+        if (currentSequenceName !== lastSequenceName) {
+          lastSequenceName = currentSequenceName;
+          await updateOutput();
+        }
+      }
+    } catch (e) {
+      // Ignore errors in auto-refresh
+    }
+  }, 2000);
+}
+
+function stopAutoRefresh() {
+  if (refreshInterval) {
+    clearInterval(refreshInterval);
+    refreshInterval = null;
+  }
+}
+
 // Helper to get all info as plain text (for clipboard)
 function getAllPanelInfoText() {
-  let text = latestDiagnosticInfo || '';
-  const infoDiv = document.getElementById('pp-detailed-info');
-  if (infoDiv) {
-    // Convert the HTML sections to plain text
-    const sectionHeaders = infoDiv.querySelectorAll('.pp-section-header');
-    const sections = infoDiv.querySelectorAll('.pp-section');
-    let detailedText = '';
-    sections.forEach(section => {
-      const header = section.querySelector('.pp-section-header');
-      if (header) detailedText += `\n${header.textContent}\n`;
-      const items = section.querySelectorAll('li');
-      items.forEach(li => {
-        detailedText += `  - ${li.textContent}\n`;
-      });
-    });
-    text += '\n' + detailedText.trim();
-  }
-  // Place invisible guidance template at the top for clipboard
+  const text = latestDiagnosticInfo || '';
+  // Place guidance template at the top for clipboard
   const guidance = 'Issue: (A short description of the problem)\nSteps to Reproduce: (A numbered list of the exact steps needed to hit this issue.)\nExpected Result: (What should happen.)\nActual Result: (What does happen.)';
   return guidance + '\n\n' + text.trim();
 }
@@ -277,12 +351,16 @@ async function copyToClipboard() {
 document.addEventListener('DOMContentLoaded', async () => {
   // Initialize and display diagnostic info on load
   await updateOutput();
-  await gatherAndDisplayDetailedInfo();
+  startAutoRefresh();
+});
+
+// Clean up when page unloads
+window.addEventListener('beforeunload', () => {
+  stopAutoRefresh();
 });
 
 document.getElementById('copy-btn').addEventListener('click', async () => {
   await copyToClipboard();
-  await updateOutput();
 });
 
 
@@ -316,409 +394,9 @@ async function getFormatsFromProject(project) {
   return Array.from(formats).join(', ') || 'Unknown';
 }
 
-// === New: Gather and display detailed info in sections ===
-async function gatherAndDisplayDetailedInfo() {
-  // 1. Premiere Pro version info
-  let appName = 'Unknown';
-  let appVersion = 'Unknown';
-  let appBuild = '';
-  // Try to get version and build from userAgent first
-  if (navigator.userAgent) {
-    let match = navigator.userAgent.match(/Premiere Pro \(Beta\)\/(\d+\.\d+\.\d+)/);
-    if (!match) {
-      match = navigator.userAgent.match(/Premiere Pro\/(\d+\.\d+\.\d+)/);
-    }
-    if (match) {
-      appName = 'Adobe Premiere Pro';
-      appVersion = match[1];
-      // Try to get build number
-      let buildMatch = navigator.userAgent.match(/build[\\s\\/]?(\\d+)/i);
-      if (buildMatch) {
-        appBuild = buildMatch[1];
-      }
-    }
-  }
-  // Fallback to UXP app object if not found
-  if (appVersion === 'Unknown') {
-    try {
-      const app = require('uxp').app;
-      appName = app.name || 'Unknown';
-      appVersion = app.version || 'Unknown';
-      // No build number available from UXP app object
-    } catch (e) {}
-  }
-
-  // 2. System info
-  let osPlatform = 'Unknown';
-  let osArch = 'Unknown';
-  let gpuInfo = 'Unknown';
-  let osVersion = 'Unknown';
-  try {
-    const os = require('os');
-    osPlatform = os.platform(); // 'darwin' for Mac, 'win32' for Windows
-    if (osPlatform === 'darwin') osPlatform = 'Mac';
-    else if (osPlatform === 'win32') osPlatform = 'Windows';
-    osArch = os.arch() || 'Unknown';
-    if (os.version) {
-      osVersion = os.version();
-    } else if (os.release) {
-      osVersion = os.release();
-    }
-    
-    // Dynamic GPU detection based on platform and architecture
-    if (osPlatform === 'Mac') {
-      if (osArch === 'arm64') {
-        gpuInfo = 'Apple Silicon GPU';
-      } else {
-        gpuInfo = 'macOS GPU (Intel-based)';
-      }
-    } else if (osPlatform === 'Windows') {
-      gpuInfo = 'Windows GPU (detected via platform)';
-    } else {
-      gpuInfo = 'GPU information not available';
-    }
-  } catch (e) {
-    // Fallback to userAgent
-    if (navigator.userAgent.indexOf('Macintosh') !== -1) {
-      osPlatform = 'Mac';
-      if (navigator.userAgent.indexOf('Intel') !== -1) {
-        gpuInfo = 'macOS GPU (Intel-based)';
-      } else {
-        gpuInfo = 'Apple Silicon GPU';
-      }
-    } else if (navigator.userAgent.indexOf('Windows') !== -1) {
-      osPlatform = 'Windows';
-      gpuInfo = 'Windows GPU (detected via userAgent)';
-    }
-    // Try to parse version from userAgent
-    const match = navigator.userAgent.match(/(Mac OS X|Windows NT) ([\d_\.]+)/);
-    if (match && match[2]) {
-      osVersion = match[2].replace(/_/g, '.');
-    }
-  }
-
-  // 3. Project and sequence info
-  let projectName = 'Unknown';
-  let sequenceName = 'Unknown';
-  let sequenceFrameRate = 'Unknown';
-  let sequenceFrameSize = 'Unknown';
-  let usedMediaListString = 'Unknown';
-  let usedCodecsListString = 'Unknown';
-  let uniqueCodecs = [];
-  let uniqueFormats = [];
-  try {
-    const project = window.project || (require('premierepro') && require('premierepro').Project.getActiveProject && await require('premierepro').Project.getActiveProject());
-    if (project) {
-      projectName = project.name || 'Unknown';
-      const sequence = project.getActiveSequence ? await project.getActiveSequence() : null;
-      if (sequence) {
-        sequenceName = sequence.name || 'Unknown';
-        // Use robust frame rate calculation
-        sequenceFrameRate = await getSequenceFrameRate(sequence);
-        // Get frame size using getFrameSize()
-        try {
-          if (sequence.getFrameSize) {
-            const frameSize = await sequence.getFrameSize();
-            if (frameSize && (frameSize.width || frameSize.height)) {
-              const width = frameSize.width || 'Unknown';
-              const height = frameSize.height || 'Unknown';
-              sequenceFrameSize = `${width}x${height}`;
-            } else {
-              sequenceFrameSize = 'Unknown';
-            }
-          } else {
-            sequenceFrameSize = 'Unknown';
-          }
-        } catch (e) {
-          sequenceFrameSize = 'Unknown';
-        }
-      }
-      // === Unique codecs from all timeline clips ===
-      uniqueCodecs = [];
-      if (sequence) {
-    
-        let usedMediaList = new Set(); // Set of used media extensions
-        let usedCodecsList = new Set(); // Set of used codecs
-
-        // Get number of Video and Audio tracks to traverse
-        let numVideoTracks = await sequence.getVideoTrackCount();
-        let numAudioTracks = await sequence.getAudioTrackCount();
-
-        // Traverse through each video track and build list of media
-        for(let trackNum = 0; trackNum < numVideoTracks; trackNum++){  // for each video track
-          let currentVideoTrack = await sequence.getVideoTrack(trackNum);
-          let currentTrackItemsList = await currentVideoTrack.getTrackItems(1, false);
-          for(let trackItemNum = 0; trackItemNum < currentTrackItemsList.length; trackItemNum++){ // for each video track item
-            let projItem = await currentTrackItemsList[trackItemNum].getProjectItem(); // get the project item of the track item
-            let clipProjItem = await require("premierepro").ClipProjectItem.cast(projItem); // cast the project item to its respective clip project item to get much more data!
-
-            if(clipProjItem){
-
-              // Get media item source file extension
-              let filePath = await clipProjItem.getMediaFilePath();
-              let splitPath = filePath.split('.')
-              usedMediaList.add(splitPath.pop()); // add the media file extension to the used media extensions list
-
-              // Get media item codec
-              let { XMPMeta } = require("uxp").xmp;
-              const PPRO_METADATA_URL = "http://ns.adobe.com/premierePrivateProjectMetaData/1.0/";
-
-              let projectItemMetadataFields = await require("premierepro").Metadata.getProjectMetadata(projItem);
-
-              let xmpMetadata = new XMPMeta(projectItemMetadataFields);
-              // If body is not defined by user, use original column value as body
-              let columnNameString = "Column.PropertyText.Codec";
-              if (
-                xmpMetadata.doesPropertyExist(PPRO_METADATA_URL, columnNameString)
-              ) {
-                let foundMetadataValue = xmpMetadata.getProperty(PPRO_METADATA_URL, columnNameString).value;
-                usedCodecsList.add(foundMetadataValue);
-              } else {
-                // do nothing
-              }              
-            }
-          }
-        } 
-
-        // Traverse through each audio track and build list of media
-        /*  
-          !!! -- This is a sloppy copy of the video track traverse above, just changing some values to reference audio tracks instead
-          !!! -- There is a much more elegant way to do this where the video/audio track items clipProjectItem is source and then sent to a single function
-          !!! -- ... but for the sake of time...
-        */
-          for(let trackNum = 0; trackNum < numAudioTracks; trackNum++){  // for each audio track
-            let currentAudioTrack = await sequence.getAudioTrack(trackNum);
-            let currentTrackItemsList = await currentAudioTrack.getTrackItems(1, false);
-            for(let trackItemNum = 0; trackItemNum < currentTrackItemsList.length; trackItemNum++){ // for each audio track item
-              let projItem = await currentTrackItemsList[trackItemNum].getProjectItem(); // get the project item of the track item
-              let clipProjItem = await require("premierepro").ClipProjectItem.cast(projItem); // cast the project item to its respective clip project item to get much more data!
-
-              if(clipProjItem){
-                  
-                // Get media item source file extension
-                let filePath = await clipProjItem.getMediaFilePath();
-                let splitPath = filePath.split('.')
-                usedMediaList.add(splitPath.pop()); // add the media file extension to the used media extensions list
-
-                // Get media item codec
-                let { XMPMeta } = require("uxp").xmp;
-                const PPRO_METADATA_URL = "http://ns.adobe.com/premierePrivateProjectMetaData/1.0/";
-
-                let projectItemMetadataFields = await require("premierepro").Metadata.getProjectMetadata(projItem);
-
-                let xmpMetadata = new XMPMeta(projectItemMetadataFields);
-                // If body is not defined by user, use original column value as body
-                let columnNameString = "Column.PropertyText.Codec";
-                if (
-                  xmpMetadata.doesPropertyExist(PPRO_METADATA_URL, columnNameString)
-                ) {
-                  let foundMetadataValue = xmpMetadata.getProperty(PPRO_METADATA_URL, columnNameString).value;
-                  usedCodecsList.add(foundMetadataValue);
-                } else {
-                  // do nothing
-                }  
-              }
-            }
-          } 
-
-        // Build UI rendereing strings
-        usedMediaListString = Array.from(usedMediaList).join(', '); 
-        usedCodecsListString = Array.from(usedCodecsList).join(', '); ;
-
-
-
-        /* --- END BEN STUFF --- */
-
-
-      }
-      // === Unique formats from all timeline clips ===
-      const rootItem = project.getRootItem ? await project.getRootItem() : null;
-      if (rootItem && rootItem.getProjectItems) {
-        const projectItems = await rootItem.getProjectItems();
-        const formatsSet = new Set();
-        for (const item of projectItems) {
-          if (item.type === 'CLIP') {
-            let clipItem = item;
-            if (window.ClipProjectItem && window.ClipProjectItem.cast) {
-              clipItem = window.ClipProjectItem.cast(item);
-            } else if (typeof ClipProjectItem !== 'undefined' && ClipProjectItem.cast) {
-              clipItem = ClipProjectItem.cast(item);
-            }
-            // Format/extension
-            if (clipItem.getMediaFilePath) {
-              try {
-                const path = await clipItem.getMediaFilePath();
-                if (path && path.includes('.')) {
-                  const ext = path.split('.').pop().toLowerCase();
-                  formatsSet.add(ext);
-                }
-              } catch (e) {}
-            }
-            // Try getProjectMetadata on each ProjectItem
-            try {
-              const ppro = require('premierepro');
-              const metadata = await ppro.Metadata.getProjectMetadata(clipItem);
-              console.log('ProjectItem metadata:', metadata);
-
-              // You can add parsing here if you see useful info in the logs
-            } catch (e) {
-              console.log('Error getting ProjectItem metadata:', e);
-            }
-          }
-        }
-        uniqueFormats = Array.from(formatsSet).filter(Boolean);
-      }
-    }
-  } catch (e) {}
-
-  // === Render to UI ===
-  let html = '';
-  html += `<div class='pp-section'><div class='pp-section-header'>Premiere Pro</div><ul><li>Name: ${appName}</li><li>Version: ${appVersion}${appBuild ? ' (Build ' + appBuild + ')' : ''}</li></ul></div>`;
-  html += `<div class='pp-section'><div class='pp-section-header'>System</div><ul><li>Platform: ${osPlatform}</li><li>OS Version: ${osVersion}</li><li>Arch: ${osArch}</li><li>GPU: ${gpuInfo}</li></ul></div>`;
-  html += `<div class='pp-section'><div class='pp-section-header'>Project</div><ul><li>Name: ${projectName}</li></ul></div>`;
-  html += `<div class='pp-section'><div class='pp-section-header'>Sequence Settings</div><ul><li>Name: ${sequenceName}</li><li>Frame Rate: ${sequenceFrameRate}</li><li>Frame Size: ${sequenceFrameSize}</li></ul></div>`;
-  html += `<div class='pp-section'><div class='pp-section-header'>Codecs in Sequence</div><ul><li>${usedCodecsListString}</li></ul></div>`;
-  html += `<div class='pp-section'><div class='pp-section-header'>Formats in Sequence</div><ul><li>${usedMediaListString}</li></ul></div>`;
-  html += `<div class='pp-section'><div class='pp-section-header'>Third Party Plugins</div><ul><li>BorisFX, Mocha Pro</li></ul></div>`;
-
-  // Insert after output-area
-  let infoDiv = document.getElementById('pp-detailed-info');
-  if (!infoDiv) {
-    infoDiv = document.createElement('div');
-    infoDiv.id = 'pp-detailed-info';
-    document.querySelector('.premiere-panel').appendChild(infoDiv);
-  }
-  infoDiv.innerHTML = html;
-}
 
 // Note: DOMContentLoaded initialization moved to earlier in file
 
-// === Unique codecs from all timeline clips ===
-async function getUniqueCodecsFromTimeline(sequence) {
-  const codecsSet = new Set();
-  if (!sequence) {
-    return [];
-  }
-  if (!sequence.getVideoTracks) {
-    // Fallback: scan all project items in the project
-    try {
-      const project = await require('premierepro').Project.getActiveProject();
-      if (project && project.getRootItem) {
-        const rootItem = await project.getRootItem();
-        async function traverse(item) {
-          if (item.type === 'BIN' || item.type === 'ROOT') {
-            if (item.getItems) {
-              const children = await item.getItems();
-              if (Array.isArray(children)) {
-                for (const child of children) {
-                  await traverse(child);
-                }
-              }
-            }
-          } else if (item.type === 'CLIP' || item.type === 'FILE') {
-            // Try getting media file path
-            if (item.getMediaFilePath) {
-              const mediaPath = await item.getMediaFilePath();
-              if (mediaPath) {
-                const extension = mediaPath.split('.').pop().toLowerCase();
-                if (extension) {
-                  codecsSet.add(extension.toUpperCase());
-                }
-              }
-            }
-            // Try footage interpretation
-            if (item.getFootageInterpretation) {
-              try {
-                const interp = await item.getFootageInterpretation();
-                if (interp) {
-                  if (interp.codec) codecsSet.add(interp.codec);
-                  if (interp.videoCodec) codecsSet.add(interp.videoCodec);
-                  if (interp.compressionType) codecsSet.add(interp.compressionType);
-                  if (interp.format) codecsSet.add(interp.format);
-                }
-              } catch (e) {
-                console.log('Error getting footage interpretation (fallback):', e);
-              }
-            }
-            // Try XMP metadata
-            try {
-              const xmp = require('uxp').xmp;
-              if (xmp && item.getXMPMetadata) {
-                const xmpData = await item.getXMPMetadata();
-                console.log('XMP metadata (fallback):', xmpData);
-              }
-            } catch (e) {
-              console.log('XMP not available or error (fallback):', e);
-            }
-          }
-        }
-        await traverse(rootItem);
-      }
-    } catch (e) {
-      console.log('Error in fallback project item scan:', e);
-    }
-    return Array.from(codecsSet).filter(Boolean);
-  }
-  try {
-    console.log('Getting codecs from timeline...');
-    const videoTracks = await sequence.getVideoTracks();
-    console.log('Video tracks found:', videoTracks.length);
-    for (const track of videoTracks) {
-      if (track.getClips) {
-        const clips = await track.getClips();
-        console.log('Clips in track:', clips.length);
-        for (const clip of clips) {
-          try {
-            if (clip.getProjectItem) {
-              const projectItem = await clip.getProjectItem();
-              console.log('Project item:', projectItem);
-              if (projectItem) {
-                if (projectItem.getMediaFilePath) {
-                  const mediaPath = await projectItem.getMediaFilePath();
-                  console.log('Media path:', mediaPath);
-                  if (mediaPath) {
-                    const extension = mediaPath.split('.').pop().toLowerCase();
-                    if (extension) {
-                      codecsSet.add(extension.toUpperCase());
-                    }
-                  }
-                }
-                if (projectItem.getFootageInterpretation) {
-                  try {
-                    const interp = await projectItem.getFootageInterpretation();
-                    console.log('Footage interpretation:', interp);
-                    if (interp) {
-                      if (interp.codec) codecsSet.add(interp.codec);
-                      if (interp.videoCodec) codecsSet.add(interp.videoCodec);
-                      if (interp.compressionType) codecsSet.add(interp.compressionType);
-                      if (interp.format) codecsSet.add(interp.format);
-                    }
-                  } catch (e) {
-                    console.log('Error getting footage interpretation:', e);
-                  }
-                }
-                try {
-                  const xmp = require('uxp').xmp;
-                  if (xmp && projectItem.getXMPMetadata) {
-                    const xmpData = await projectItem.getXMPMetadata();
-                    console.log('XMP metadata:', xmpData);
-                  }
-                } catch (e) {
-                  console.log('XMP not available or error:', e);
-                }
-              }
-            }
-          } catch (clipError) {
-            console.log('Error processing clip:', clipError);
-          }
-        }
-      }
-    }
-  } catch (e) {
-    console.log('Error in getUniqueCodecsFromTimeline:', e);
-  }
-  return Array.from(codecsSet).filter(Boolean);
-}
 
 // Helper to get media types from sequence
 async function getMediaTypesFromSequence(sequence) {
