@@ -193,20 +193,35 @@ async function getDiagnosticInfo() {
   const premiere = await getPremiereData();
   const system = getSystemData();
   
+  // Extract frame rate and frame size from sequenceSettings
+  const sequenceInfo = premiere.sequenceSettings.split(', ');
+  const frameRate = sequenceInfo[0] || 'Unknown';
+  const frameSize = sequenceInfo[1] || 'Unknown';
+  
   return (
-    `Premiere Version: ${premiere.version}  \n` +
-    `Project Name: ${premiere.projectName}  \n` +
-    `Sequence Name: ${premiere.sequenceName}  \n` +
-    `OS: ${system.osVersion}  \n` +
-    `CPU: ${system.cpu}  \n` +
-    `GPU: ${system.gpu}  \n` +
-    `RAM: ${system.ram}  \n` +
-    `Storage: ${system.storage}  \n` +
+    `Premiere Pro\n` +
+    `  Name: Adobe Premiere Pro\n` +
+    `  Version: ${premiere.version}\n` +
     `\n` +
-    `Sequence Settings: ${premiere.sequenceSettings}  \n` +
+    `System\n` +
+    `  Platform: ${system.osVersion.split(' ')[0] || 'Unknown'}\n` +
+    `  OS Version: ${system.osVersion}\n` +
+    `  Arch: ${system.cpu.includes('arm64') ? 'arm64' : system.cpu}\n` +
+    `  GPU: ${system.gpu}\n` +
     `\n` +
-    `Media Types: ${premiere.mediaTypes}  \n` +
-    `Formats: ${premiere.formats}  `
+    `Project\n` +
+    `  Name: ${premiere.projectName}\n` +
+    `\n` +
+    `Sequence Settings\n` +
+    `  Name: ${premiere.sequenceName}\n` +
+    `  Frame Rate: ${frameRate}\n` +
+    `  Frame Size: ${frameSize}\n` +
+    `\n` +
+    `Codecs in Sequence\n` +
+    `  ${premiere.mediaTypes}\n` +
+    `\n` +
+    `Formats in Sequence\n` +
+    `  ${premiere.formats}`
   );
 }
 
