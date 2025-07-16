@@ -192,7 +192,6 @@ function getSystemData() {
 async function getDiagnosticInfo() {
   const premiere = await getPremiereData();
   const system = getSystemData();
-  const workspace = await getWorkspaceInfo();
   
   return (
     `Premiere Version: ${premiere.version}  \n` +
@@ -207,56 +206,10 @@ async function getDiagnosticInfo() {
     `Sequence Settings: ${premiere.sequenceSettings}  \n` +
     `\n` +
     `Media Types: ${premiere.mediaTypes}  \n` +
-    `Formats: ${premiere.formats}  \n` +
-    `\n` +
-    `Workspace: ${workspace.name}  \n` +
-    `Plugins: ${workspace.plugins}  `
+    `Formats: ${premiere.formats}  `
   );
 }
 
-// Get workspace and plugin information
-async function getWorkspaceInfo() {
-  let workspaceName = 'Unknown';
-  let plugins = 'Unknown';
-  
-  try {
-    const ppro = require('premierepro');
-    
-    // Try to get current workspace - this API likely doesn't exist in UXP for Premiere
-    try {
-      if (ppro.Application && ppro.Application.getCurrentWorkspace) {
-        const app = await ppro.Application.getCurrentWorkspace();
-        if (app && app.name) {
-          workspaceName = app.name;
-        }
-      } else {
-        workspaceName = 'Workspace API not available in UXP';
-      }
-    } catch (e) {
-      workspaceName = 'Workspace info not available';
-    }
-    
-    // Try to get installed plugins/effects - this API likely doesn't exist in UXP  
-    try {
-      if (ppro.Application && ppro.Application.getInstalledPlugins) {
-        const pluginList = await ppro.Application.getInstalledPlugins();
-        if (pluginList && Array.isArray(pluginList)) {
-          plugins = pluginList.length > 0 ? pluginList.join(', ') : 'No plugins detected';
-        }
-      } else {
-        plugins = 'Plugin enumeration not available in UXP';
-      }
-    } catch (e) {
-      plugins = 'Plugin information not available';
-    }
-    
-  } catch (e) {
-    workspaceName = 'Premiere Pro API not available';
-    plugins = 'Plugin information not available';
-  }
-  
-  return { name: workspaceName, plugins };
-}
 
 async function updateOutput() {
   const info = await getDiagnosticInfo();
@@ -264,36 +217,6 @@ async function updateOutput() {
   document.getElementById('output-area').textContent = info;
 }
 
-// Auto-refresh when sequences change
-let lastSequenceName = '';
-let refreshInterval;
-
-function startAutoRefresh() {
-  // Check for sequence changes every 2 seconds
-  refreshInterval = setInterval(async () => {
-    try {
-      const ppro = require('premierepro');
-      const project = await ppro.Project.getActiveProject();
-      if (project) {
-        const sequence = await project.getActiveSequence();
-        const currentSequenceName = sequence ? sequence.name : '';
-        if (currentSequenceName !== lastSequenceName) {
-          lastSequenceName = currentSequenceName;
-          await updateOutput();
-        }
-      }
-    } catch (e) {
-      // Ignore errors in auto-refresh
-    }
-  }, 2000);
-}
-
-function stopAutoRefresh() {
-  if (refreshInterval) {
-    clearInterval(refreshInterval);
-    refreshInterval = null;
-  }
-}
 
 // Helper to get all info as plain text (for clipboard)
 function getAllPanelInfoText() {
@@ -348,19 +271,12 @@ async function copyToClipboard() {
   }
 }
 
-document.addEventListener('DOMContentLoaded', async () => {
-  // Initialize and display diagnostic info on load
-  await updateOutput();
-  startAutoRefresh();
-});
-
-// Clean up when page unloads
-window.addEventListener('beforeunload', () => {
-  stopAutoRefresh();
-});
+// Show info on load
+updateOutput();
 
 document.getElementById('copy-btn').addEventListener('click', async () => {
   await copyToClipboard();
+  await updateOutput();
 });
 
 
